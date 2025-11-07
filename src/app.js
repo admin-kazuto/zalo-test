@@ -2,63 +2,76 @@ import express from "express";
 import http from "http";
 import { Server as SocketIOServer } from "socket.io";
 import dotenv from "dotenv";
-
-import { initializeSocket } from "./subscribers/socket.handler.js";
-import zaloManager from "./services/zalo.manager.js";
+import cors from 'cors'; 
+import { initializeSocketHandler } from "./subscribers/socket.handler.js"; 
+import zaloManager from './services/zalo.manager.js';
 
 dotenv.config();
 
 const app = express();
-// Tăng giới hạn payload cho Express
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ limit: '100mb', extended: true }));
-
 const server = http.createServer(app);
 
-const PORT = process.env.PORT || 3001;
+// --- CẤU HÌNH CORS ---
 const allowedOrigins = [
-    process.env.CLIENT_ORIGIN || "http://localhost:5173",
+    "http://localhost:5173", // Địa chỉ của React FE
     "http://127.0.0.1:5500",
     "null"
 ];
 
-// --- CẤU HÌNH SOCKET.IO ĐẦY ĐỦ NHẤT ---
+// BƯỚC 1: Cấu hình CORS cho các HTTP Request (quan trọng cho handshake ban đầu của Socket.IO)
+app.use(cors({ origin: allowedOrigins }));
+
+// BƯỚC 2: Khởi tạo Socket.IO Server với cấu hình CORS
 const io = new SocketIOServer(server, {
-    // Giới hạn ở lớp Socket.IO
-    maxHttpBufferSize: 1e8, // 100MB
     cors: {
         origin: allowedOrigins,
         methods: ["GET", "POST"]
-    },
-    // Truyền trực tiếp tùy chọn xuống lớp Engine.IO và WS
-    // Đây là bước quan trọng nhất
-    engine: {
-        maxHttpBufferSize: 1e8, // 100MB cho Engine.IO
-        wsOptions: {
-            maxPayload: 1e8 // 100MB cho lớp WS cấp thấp
-        }
     }
 });
-// --- KẾT THÚC CẤU HÌNH ---
+// --- KẾT THÚC CẤU HÌNH CORS ---
 
 
-app.get("/api/health", (req, res) => {
-    res.status(200).json({ status: "OK", message: "Server is running" });
-});
+// Middleware để xử lý JSON body
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-app.get("/api/accounts", (req, res) => {
-    try {
-        const accounts = zaloManager.getActiveAccounts();
-        res.status(200).json(accounts);
-    } catch (error) {
-        res.status(500).json({ message: "Lỗi khi lấy danh sách tài khoản", error: error.message });
+// Tích hợp RESTful API (nếu có)
+// app.use("/api", apiRouter);
+
+app.get('/api/qr-code/:tempId.png', (req, res) => {
+    const { tempId } = req.params;
+    // Lấy dữ liệu ảnh base64 đã được lưu trong zaloManager
+    const qrCodeData = zaloManager.getQrCodeForSession(tempId);
+
+    if (qrCodeData) {
+        // Tách phần tiền tố 'data:image/png;base64,'
+        const base64Image = qrCodeData.split(';base64,').pop();
+        // Chuyển đổi base64 thành buffer ảnh
+        const imgBuffer = Buffer.from(base64Image, 'base64');
+
+        // Trả về ảnh cho trình duyệt
+        res.writeHead(200, {
+            'Content-Type': 'image/png',
+            'Content-Length': imgBuffer.length
+        });
+        res.end(imgBuffer);
+    } else {
+        res.status(404).json({ message: "Không tìm thấy phiên đăng nhập hoặc QR code đã hết hạn." });
     }
 });
 
-initializeSocket(io);
+app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
+
+// Khởi tạo trình xử lý Socket.IO
+initializeSocketHandler(io);
+
+
+// Khởi động Server
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-    console.log(`[SERVER] Đang chạy ở môi trường: ${process.env.NODE_ENV || 'development'}`);
     console.log(`[SERVER] Máy chủ đang lắng nghe trên cổng ${PORT}`);
     console.log(`[SERVER] Cho phép kết nối từ các nguồn: ${allowedOrigins.join(', ')}`);
 });
+
+

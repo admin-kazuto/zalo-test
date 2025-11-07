@@ -44,16 +44,49 @@ class ZaloManager extends EventEmitter {
     const zalo = new Zalo({
       imageMetadataGetter: metadataGetter,
     });
-
-    this.loginSessions.set(tempId, socketId);
+    // const zalo = new Zalo();
+    this.loginSessions.set(tempId, { socketId: socketId });
     console.log(
       `[ZaloManager] Bắt đầu phiên đăng nhập ${tempId} cho client ${socketId}`
     );
     try {
-      const api = await zalo.loginQR({
-        qr: (qrCodeData) => {
-          this.emit("qr-code", { tempId, socketId, qrCodeImage: qrCodeData });
-        },
+      // const api = await zalo.loginQR({
+      //   qr: (qrCodeData) => {
+      //     this.emit("qr-code", { tempId, socketId, qrCodeImage: qrCodeData });
+      //   },
+      // });
+
+      const api = await zalo.loginQR(null, (qrData) => {
+        console.log("[ZaloManager] Callback QR được gọi!"); // Log để xác nhận
+
+        // Kiểm tra cấu trúc dữ liệu trả về theo đúng API mẫu
+        if (qrData && qrData.data && qrData.data.image) {
+          // qrData.data.image là chuỗi base64 của ảnh QR
+          const qrCodeDataBase64 = qrData.data.image;
+          console.log(
+            `[ZaloManager] Đã nhận được dữ liệu QR code, độ dài base64: ${qrCodeDataBase64.length}`
+          );
+
+          const session = this.loginSessions.get(tempId);
+          if (session) {
+            // Thêm 'data:image/png;base64,' để FE có thể hiển thị trực tiếp
+            session.qrCodeImage = "data:image/png;base64," + qrCodeDataBase64;
+            this.loginSessions.set(tempId, session);
+          }
+
+          // Bắn sự kiện 'qr-code' về cho client
+          this.emit("qr-code", { tempId, socketId });
+        } else {
+          console.error(
+            "[ZaloManager] Lỗi: Dữ liệu QR trả về không có cấu trúc qrData.data.image"
+          );
+          // Có thể emit một sự kiện lỗi về client nếu muốn
+          this.emit("login-failure", {
+            tempId,
+            socketId,
+            error: "Không thể lấy dữ liệu QR code.",
+          });
+        }
       });
 
       if (!api || !api.listener || !api.listener.ctx)
@@ -88,7 +121,13 @@ class ZaloManager extends EventEmitter {
       console.log(`[ZaloManager] Đã dọn dẹp phiên đăng nhập ${tempId}`);
     }
   }
-
+    getQrCodeForSession(tempId) {
+    const session = this.loginSessions.get(tempId);
+    if (session && session.qrCodeImage) {
+      return session.qrCodeImage;
+    }
+    return null;
+  }
   _setupListeners(accountInfo) {
     const { id, name, api } = accountInfo;
     api.listener.on("message", (message) => {
@@ -315,10 +354,6 @@ class ZaloManager extends EventEmitter {
     }
     return accountList;
   }
-
-  // ==========================================
-  // HÀM 1: LẤY THÔNG TIN GROUP + MEMBERS TỪ LINK
-  // ==========================================
 
   async getInfoMembersGroupLink(accountId, groupLink) {
     const account = this.accounts.get(accountId);
@@ -627,12 +662,6 @@ class ZaloManager extends EventEmitter {
     }
   }
 
-  // file: zalo.manager.js
-  // ... dán vào bên trong class ZaloManager, thay thế hàm sendFriendRequest cũ ...
-
-  // ==========================================
-  // HÀM: GỬI LỜI MỜI KẾT BẠN (Sửa lại cho đúng API)
-  // ==========================================
   async sendFriendRequest(
     accountId,
     targetIdentifier,
@@ -833,7 +862,7 @@ class ZaloManager extends EventEmitter {
       console.log(`[ZaloManager] Response:`);
       console.log(JSON.stringify(result, null, 2));
       console.log(`${"=".repeat(70)}\n`);
-camonquykhach
+      camonquykhach;
 
       return {
         success: true,
@@ -1255,6 +1284,48 @@ camonquykhach
         data: { groupId }, // Trả về groupId để client biết
         failedIdentifiers,
       };
+    }
+  }
+
+  async acceptFriendRequest(accountId, userId) {
+    const account = this.accounts.get(accountId);
+    if (!account || !account.api) {
+      throw new Error(
+        `Không tìm thấy tài khoản hoặc tài khoản chưa sẵn sàng: ${accountId}`
+      );
+    }
+
+    console.log(`\n${"=".repeat(70)}`);
+    console.log(`[ZaloManager] ✅ CHẤP NHẬN LỜI MỜI KẾT BẠN`);
+    console.log(`[ZaloManager] Account: ${account.name} (${accountId})`);
+    console.log(`[ZaloManager] Từ User ID: ${userId}`);
+    console.log(`${"=".repeat(70)}\n`);
+
+    const api = account.api;
+
+    try {
+      console.log(
+        `[ZaloManager]  Đang gọi api.acceptFriendRequest(${userId})...`
+      );
+      const result = await api.acceptFriendRequest(userId);
+
+      console.log(`\n[ZaloManager]  CHẤP NHẬN THÀNH CÔNG!`);
+      console.log(`[ZaloManager] Response:`, result); // Thường là chuỗi rỗng
+      console.log(`${"=".repeat(70)}\n`);
+
+      return {
+        success: true,
+        userId: userId,
+        response: result,
+        message: `Đã chấp nhận lời mời kết bạn từ ${userId}!`,
+      };
+    } catch (error) {
+      console.error(`\n[ZaloManager]  LỖI KHI CHẤP NHẬN LỜI MỜI KẾT BẠN!`);
+      console.error(`[ZaloManager] User ID: ${userId}`);
+      console.error(`[ZaloManager] Error: ${error.message}`);
+      console.error(`${"=".repeat(70)}\n`);
+
+      throw new Error(`Chấp nhận lời mời kết bạn thất bại: ${error.message}`);
     }
   }
 }
