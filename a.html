@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Socket.IO Test Client</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        button { font-size: 16px; padding: 10px; }
+        #logs { margin-top: 20px; border: 1px solid #ccc; padding: 10px; height: 300px; overflow-y: scroll; background: #f5f5f5; }
+    </style>
+</head>
+<body>
+
+    <h1>Socket.IO Test Client</h1>
+    <button id="connectBtn">1. Connect to Server</button>
+    <button id="loginBtn" disabled>2. Request New Login</button>
+    <p>Status: <b id="status">Disconnected</b></p>
+
+    <h2>Logs:</h2>
+    <div id="logs"></div>
+
+    <!-- Import thư viện socket.io-client -->
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const logsEl = document.getElementById('logs');
+        const connectBtn = document.getElementById('connectBtn');
+        const loginBtn = document.getElementById('loginBtn');
+        let socket;
+
+        function addLog(message) {
+            const time = new Date().toLocaleTimeString();
+            logsEl.innerHTML += `<div>[${time}] ${message}</div>`;
+            logsEl.scrollTop = logsEl.scrollHeight;
+        }
+
+        connectBtn.addEventListener('click', () => {
+            addLog('Attempting to connect to http://localhost:3001...');
+            socket = io('http://localhost:3001');
+
+            // Lắng nghe các sự kiện quan trọng
+            socket.on('connect', () => {
+                statusEl.textContent = 'Connected!';
+                statusEl.style.color = 'green';
+                addLog(`✅ CONNECTED! Socket ID: ${socket.id}`);
+                connectBtn.disabled = true;
+                loginBtn.disabled = false;
+            });
+
+            socket.on('disconnect', () => {
+                statusEl.textContent = 'Disconnected';
+                statusEl.style.color = 'red';
+                addLog('❌ DISCONNECTED!');
+                connectBtn.disabled = false;
+                loginBtn.disabled = true;
+            });
+            
+            // LẮNG NGHE SỰ KIỆN QUAN TRỌNG NHẤT
+            socket.on('qr_code_ready', (data) => {
+                addLog(`✅✅✅ SUCCESS! Received 'qr_code_ready' event!`);
+                addLog(`Data received: <pre>${JSON.stringify(data, null, 2)}</pre>`);
+            });
+
+            // Lắng nghe các sự kiện khác để biết server có hoạt động
+             socket.on('update_accounts_list', (accounts) => {
+                addLog(`Received 'update_accounts_list'. Active accounts: ${accounts.length}`);
+            });
+
+        });
+
+        loginBtn.addEventListener('click', () => {
+            if (socket && socket.connected) {
+                addLog("🚀 Sending 'request_new_login' event to server...");
+                socket.emit('request_new_login');
+            } else {
+                addLog("Cannot send, not connected.");
+            }
+        });
+    </script>
+
+</body>
+</html>
