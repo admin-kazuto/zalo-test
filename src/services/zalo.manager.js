@@ -1,7 +1,7 @@
 import { Zalo, ThreadType } from "zca-js";
 import EventEmitter from "events";
 import { v4 as uuidv4 } from "uuid";
-import { fileTypeFromBuffer } from "file-type"; // <-- Sẽ sử dụng thư viện này
+import { fileTypeFromBuffer } from "file-type";
 import imageSize from "image-size";
 import fs from "fs";
 import path from "path";
@@ -38,49 +38,57 @@ class ZaloManager extends EventEmitter {
     console.log("[ZaloManager] Đã được khởi tạo.");
   }
 
-  async initiateLogin(socketId) {
+  async initiateLogin(socketId, io) {
     const tempId = uuidv4();
+
+    // 🪄 Patch console.log toàn cục để bắt QR hết hạn
+    const originalConsoleLog = console.log;
+    console.log = (...args) => {
+      const msg = args.join(" ");
+      // Nếu phát hiện QR expired từ zca-js
+      if (msg.includes("QR expired!")) {
+        originalConsoleLog(
+          `[Hook] Phát hiện QR hết hạn cho client ${socketId}`
+        );
+        global.__qrExpired = true; // Gắn cờ toàn cục
+      }
+      originalConsoleLog(...args);
+    };
 
     const zalo = new Zalo({
       imageMetadataGetter: metadataGetter,
     });
-    // const zalo = new Zalo();
-    this.loginSessions.set(tempId, { socketId: socketId });
+
+    // 🧠 Lưu lại phiên login
+    this.loginSessions.set(tempId, { socketId });
     console.log(
       `[ZaloManager] Bắt đầu phiên đăng nhập ${tempId} cho client ${socketId}`
     );
+
     try {
-      // const api = await zalo.loginQR({
-      //   qr: (qrCodeData) => {
-      //     this.emit("qr-code", { tempId, socketId, qrCodeImage: qrCodeData });
-      //   },
-      // });
-
+      // 🧩 Gọi loginQR để lấy mã QR
       const api = await zalo.loginQR(null, (qrData) => {
-        console.log("[ZaloManager] Callback QR được gọi!"); // Log để xác nhận
+        console.log("[ZaloManager] Callback QR được gọi!");
 
-        // Kiểm tra cấu trúc dữ liệu trả về theo đúng API mẫu
+        // Kiểm tra dữ liệu trả về hợp lệ
         if (qrData && qrData.data && qrData.data.image) {
-          // qrData.data.image là chuỗi base64 của ảnh QR
           const qrCodeDataBase64 = qrData.data.image;
           console.log(
-            `[ZaloManager] Đã nhận được dữ liệu QR code, độ dài base64: ${qrCodeDataBase64.length}`
+            `[ZaloManager] Nhận QR code cho phiên ${tempId}, độ dài base64: ${qrCodeDataBase64.length}`
           );
 
           const session = this.loginSessions.get(tempId);
           if (session) {
-            // Thêm 'data:image/png;base64,' để FE có thể hiển thị trực tiếp
             session.qrCodeImage = "data:image/png;base64," + qrCodeDataBase64;
             this.loginSessions.set(tempId, session);
           }
 
-          // Bắn sự kiện 'qr-code' về cho client
+          // Gửi QR về cho FE hiển thị
           this.emit("qr-code", { tempId, socketId });
         } else {
           console.error(
-            "[ZaloManager] Lỗi: Dữ liệu QR trả về không có cấu trúc qrData.data.image"
+            `[ZaloManager] Dữ liệu QR không hợp lệ cho phiên ${tempId}`
           );
-          // Có thể emit một sự kiện lỗi về client nếu muốn
           this.emit("login-failure", {
             tempId,
             socketId,
@@ -89,6 +97,7 @@ class ZaloManager extends EventEmitter {
         }
       });
 
+      // Check xem login có context không
       if (!api || !api.listener || !api.listener.ctx)
         throw new Error(
           "Đối tượng API hoặc context không hợp lệ sau khi đăng nhập."
@@ -98,6 +107,7 @@ class ZaloManager extends EventEmitter {
       if (!selfId)
         throw new Error("Không thể tìm thấy User ID sau khi đăng nhập.");
 
+      // 📦 Lấy thông tin tài khoản
       const selfInfoResponse = await api.getUserInfo(selfId);
       if (!selfInfoResponse?.changed_profiles?.[selfId])
         throw new Error(
@@ -106,22 +116,39 @@ class ZaloManager extends EventEmitter {
 
       const userProfile = selfInfoResponse.changed_profiles[selfId];
       const selfName = userProfile.zaloName;
-      const accountInfo = { id: selfId, name: selfName, api: api };
+      const accountInfo = { id: selfId, name: selfName, api };
+
       this.accounts.set(accountInfo.id, accountInfo);
       console.log(
         `[ZaloManager] Đăng nhập thành công cho: ${accountInfo.name} (${accountInfo.id})`
       );
+
       this.emit("login-success", { tempId, socketId, accountInfo });
-      this._setupListeners(accountInfo);
     } catch (error) {
       console.error(`[ZaloManager] Lỗi đăng nhập với tempId ${tempId}:`, error);
+
+      // Nếu QR vừa expired thì báo FE
+      if (global.__qrExpired) {
+        console.log(
+          `[ZaloManager] Phát hiện QR expired qua hook console, gửi event client ${socketId}`
+        );
+        io.to(socketId).emit("qr_expired", { tempId });
+        this.cleanupSession?.(tempId);
+        global.__qrExpired = false;
+      }
+
       this.emit("login-failure", { tempId, socketId, error: error.message });
     } finally {
+      // 🧹 Dọn dẹp phiên login (dù thành công hay fail)
       this.loginSessions.delete(tempId);
       console.log(`[ZaloManager] Đã dọn dẹp phiên đăng nhập ${tempId}`);
+
+      // 🔄 Khôi phục console.log về bình thường
+      console.log = originalConsoleLog;
     }
   }
-    getQrCodeForSession(tempId) {
+
+  getQrCodeForSession(tempId) {
     const session = this.loginSessions.get(tempId);
     if (session && session.qrCodeImage) {
       return session.qrCodeImage;
@@ -165,12 +192,137 @@ class ZaloManager extends EventEmitter {
     );
   }
 
+  // async sendMessageWithAttachments(
+  //   accountId,
+  //   recipientId,
+  //   recipientType,
+  //   messageText = "",
+  //   filePaths = []
+  // ) {
+  //   const account = this.accounts.get(accountId);
+  //   if (!account || !account.api) {
+  //     throw new Error(
+  //       `Không tìm thấy tài khoản hoặc tài khoản chưa sẵn sàng: ${accountId}`
+  //     );
+  //   }
+  //   const api = account.api;
+  //   console.log(
+  //     `[ZaloManager] Tài khoản '${account.name}' đang gửi tin nhắn/file đến ${recipientId}...`
+  //   );
+
+  //   try {
+  //     const threadType =
+  //       recipientType === "GROUP" || recipientType === 1
+  //         ? ThreadType.Group
+  //         : ThreadType.User;
+
+  //     const messagePayload = { msg: messageText || "" };
+
+  //     if (filePaths && filePaths.length > 0) {
+  //       const attachments = await Promise.all(
+  //         filePaths.map(async (filePath) => {
+  //           if (!fs.existsSync(filePath)) {
+  //             console.error(
+  //               `[ZaloManager] Lỗi: File không tồn tại tại đường dẫn: ${filePath}`
+  //             );
+  //             return null;
+  //           }
+  //           const buffer = fs.readFileSync(filePath);
+  //           const fileType = await fileTypeFromBuffer(buffer);
+
+  //           const metadata = {
+  //             totalSize: buffer.length,
+  //           };
+
+  //           if (fileType?.mime.startsWith("image/")) {
+  //             try {
+  //               const imageMeta = imageSize(buffer);
+  //               metadata.width = imageMeta.width;
+  //               metadata.height = imageMeta.height;
+  //               console.log(
+  //                 `[ZaloManager] Đã xử lý file ảnh: ${path.basename(filePath)}`
+  //               );
+  //             } catch (e) {
+  //               console.warn(
+  //                 `[ZaloManager] Không thể đọc kích thước ảnh cho file: ${path.basename(
+  //                   filePath
+  //                 )}`
+  //               );
+  //             }
+  //           } else if (fileType?.mime.startsWith("video/")) {
+  //             metadata.width = 1280;
+  //             metadata.height = 720;
+  //             console.log(
+  //               `[ZaloManager] Đã xử lý file video: ${path.basename(filePath)}`
+  //             );
+  //           } else {
+  //             console.log(
+  //               `[ZaloManager] Đã xử lý file thông thường: ${path.basename(
+  //                 filePath
+  //               )}`
+  //             );
+  //           }
+
+  //           return {
+  //             data: buffer,
+  //             filename: path.basename(filePath),
+  //             metadata: metadata,
+  //           };
+  //         })
+  //       );
+
+  //       const validAttachments = attachments.filter((att) => att !== null);
+  //       if (validAttachments.length > 0) {
+  //         messagePayload.attachments = validAttachments;
+  //       }
+  //     }
+
+  //     if (
+  //       !messagePayload.msg &&
+  //       (!messagePayload.attachments || messagePayload.attachments.length === 0)
+  //     ) {
+  //       console.warn(
+  //         "[ZaloManager] Không có nội dung văn bản hoặc file hợp lệ để gửi."
+  //       );
+  //       return { message: "Không có nội dung để gửi." };
+  //     }
+
+  //     const result = await api.sendMessage(
+  //       messagePayload,
+  //       recipientId,
+  //       threadType
+  //     );
+
+  //     if (
+  //       result &&
+  //       (result.message || (result.attachment && result.attachment.length > 0))
+  //     ) {
+  //       console.log(`[ZaloManager] Gửi tin nhắn/file thành công!`);
+  //       return result;
+  //     } else {
+  //       console.error(
+  //         "[ZaloManager] Phản hồi không hợp lệ từ Zalo:",
+  //         JSON.stringify(result, null, 2)
+  //       );
+  //       throw new Error(
+  //         "Phản hồi từ Zalo không xác định được trạng thái thành công."
+  //       );
+  //     }
+  //   } catch (error) {
+  //     console.error(
+  //       `[ZaloManager] Lỗi khi thực thi lệnh gửi tin nhắn/file từ tài khoản ${accountId}:`,
+  //       error
+  //     );
+  //     throw error;
+  //   }
+  // }
+
   async sendMessageWithAttachments(
     accountId,
     recipientId,
     recipientType,
     messageText = "",
-    filePaths = []
+    files = [] // <-- Nhận vào một mảng object file, không phải mảng đường dẫn
   ) {
     const account = this.accounts.get(accountId);
     if (!account || !account.api) {
@@ -180,7 +332,7 @@ class ZaloManager extends EventEmitter {
     }
     const api = account.api;
     console.log(
-      `[ZaloManager] Tài khoản '${account.name}' đang gửi tin nhắn/file đến ${recipientId}...`
+      `[ZaloManager] Tài khoản '${account.name}' đang chuẩn bị gửi tin/file đến ${recipientId}...`
     );
 
     try {
@@ -189,88 +341,88 @@ class ZaloManager extends EventEmitter {
           ? ThreadType.Group
           : ThreadType.User;
 
+      // Chuẩn bị payload cơ bản
       const messagePayload = { msg: messageText || "" };
 
-      if (filePaths && filePaths.length > 0) {
-        // <-- THAY ĐỔI: Sử dụng Promise.all để xử lý bất đồng bộ
-        const attachments = await Promise.all(
-          filePaths.map(async (filePath) => {
-            if (!fs.existsSync(filePath)) {
-              console.error(
-                `[ZaloManager] Lỗi: File không tồn tại tại đường dẫn: ${filePath}`
-              );
-              return null;
-            }
-            const buffer = fs.readFileSync(filePath);
-            const fileType = await fileTypeFromBuffer(buffer); // <-- Xác định loại file
+      // Xử lý các file đính kèm nếu có
+      if (files && files.length > 0) {
+        console.log(
+          `[ZaloManager] Đang xử lý ${files.length} file đính kèm...`
+        );
 
+        // Sử dụng Promise.all để xử lý bất đồng bộ
+        const attachments = await Promise.all(
+          // <-- Lặp qua mảng `files` từ multer
+          files.map(async (file) => {
+            // Lấy dữ liệu nhị phân trực tiếp từ buffer của file
+            const buffer = file.buffer;
+            const fileType = await fileTypeFromBuffer(buffer);
+
+            // Xây dựng metadata theo yêu cầu của zca-js
             const metadata = {
-              totalSize: buffer.length, // <-- Metadata cơ bản cho mọi loại file
+              totalSize: buffer.length,
             };
 
             if (fileType?.mime.startsWith("image/")) {
-              // <-- XỬ LÝ ẢNH
               try {
                 const imageMeta = imageSize(buffer);
                 metadata.width = imageMeta.width;
                 metadata.height = imageMeta.height;
                 console.log(
-                  `[ZaloManager] Đã xử lý file ảnh: ${path.basename(filePath)}`
+                  `[ZaloManager] Đã xử lý file ảnh: ${file.originalname}`
                 );
               } catch (e) {
                 console.warn(
-                  `[ZaloManager] Không thể đọc kích thước ảnh cho file: ${path.basename(
-                    filePath
-                  )}`
+                  `[ZaloManager] Không thể đọc kích thước ảnh cho file: ${file.originalname}`
                 );
               }
             } else if (fileType?.mime.startsWith("video/")) {
-              // <-- XỬ LÝ VIDEO (cung cấp giá trị mặc định)
               metadata.width = 1280; // Giá trị giả lập
               metadata.height = 720; // Giá trị giả lập
               console.log(
-                `[ZaloManager] Đã xử lý file video: ${path.basename(filePath)}`
+                `[ZaloManager] Đã xử lý file video: ${file.originalname}`
               );
             } else {
-              // <-- XỬ LÝ CÁC LOẠI FILE KHÁC (PDF, DOCX, ZIP...)
               console.log(
-                `[ZaloManager] Đã xử lý file thông thường: ${path.basename(
-                  filePath
-                )}`
+                `[ZaloManager] Đã xử lý file thông thường: ${file.originalname}`
               );
-              // Không cần metadata đặc biệt
             }
 
+            // Trả về object đúng với cấu trúc `AttachmentSource` của zca-js
             return {
               data: buffer,
-              filename: path.basename(filePath),
+              filename: file.originalname,
               metadata: metadata,
             };
           })
         );
 
+        // Thêm các file đính kèm hợp lệ vào payload
         const validAttachments = attachments.filter((att) => att !== null);
         if (validAttachments.length > 0) {
           messagePayload.attachments = validAttachments;
         }
       }
 
+      // Kiểm tra lại lần cuối xem có gì để gửi không
       if (
         !messagePayload.msg &&
         (!messagePayload.attachments || messagePayload.attachments.length === 0)
       ) {
         console.warn(
-          "[ZaloManager] Không có nội dung văn bản hoặc file hợp lệ để gửi."
+          "[ZaloManager] Không có nội dung để gửi (không có văn bản hoặc file hợp lệ)."
         );
         return { message: "Không có nội dung để gửi." };
       }
 
+      // Gửi tin nhắn bằng zca-js
       const result = await api.sendMessage(
         messagePayload,
         recipientId,
         threadType
       );
 
+      // Xử lý kết quả trả về
       if (
         result &&
         (result.message || (result.attachment && result.attachment.length > 0))
@@ -288,7 +440,7 @@ class ZaloManager extends EventEmitter {
       }
     } catch (error) {
       console.error(
-        `[ZaloManager] Lỗi khi thực thi lệnh gửi tin nhắn/file từ tài khoản ${accountId}:`,
+        `[ZaloManager] Lỗi khi gửi tin nhắn từ tài khoản ${accountId}:`,
         error
       );
       throw error;
@@ -371,7 +523,6 @@ class ZaloManager extends EventEmitter {
     const api = account.api;
 
     try {
-      // Bước 1: Lấy trang đầu tiên
       console.log(`[getInfoMembersGroupLink] 📥 Đang lấy trang đầu tiên...`);
 
       const firstResult = await api.getGroupLinkInfo({
@@ -387,7 +538,6 @@ class ZaloManager extends EventEmitter {
       let groupId = null;
       let groupData = null;
 
-      // Xử lý 2 dạng cấu trúc khác nhau
       if (firstResult.groupId) {
         groupId = firstResult.groupId;
         groupData = firstResult;
@@ -423,7 +573,6 @@ class ZaloManager extends EventEmitter {
 
       let allMembers = [...(groupData.currentMems || [])];
 
-      // Bước 2: Nếu có thêm thành viên, lấy tiếp các trang
       if (groupData.hasMoreMember === 1) {
         console.log(
           `\n[getInfoMembersGroupLink] 📖 Nhóm lớn, bắt đầu quét các trang tiếp theo...`
@@ -468,17 +617,15 @@ class ZaloManager extends EventEmitter {
               );
               allMembers.push(...pageData.currentMems);
 
-              // Kiểm tra còn trang tiếp theo không
               hasMore = pageData.hasMoreMember === 1;
               currentPage++;
 
-              // Delay nhẹ tránh rate limit
               if (hasMore) {
                 await new Promise((resolve) => setTimeout(resolve, 300));
               }
             } else {
               console.log(
-                `[getInfoMembersGroupLink] ⚠️  Trang ${
+                `[getInfoMembersGroupLink]  Trang ${
                   currentPage + 1
                 }: Không có thêm thành viên`
               );
@@ -501,10 +648,9 @@ class ZaloManager extends EventEmitter {
       }
 
       console.log(
-        `\n[getInfoMembersGroupLink] 📊 Tổng cộng: ${allMembers.length}/${groupData.totalMember} thành viên`
+        `\n[getInfoMembersGroupLink] Tổng cộng: ${allMembers.length}/${groupData.totalMember} thành viên`
       );
 
-      // Bước 3: Chuyển array thành object để dễ tra cứu
       const membersInfo = {};
       allMembers.forEach((member) => {
         membersInfo[member.id] = {
@@ -529,7 +675,6 @@ class ZaloManager extends EventEmitter {
       );
       console.log(`${"=".repeat(70)}\n`);
 
-      // Trả về kết quả đầy đủ
       return {
         groupId: groupId,
         groupName: groupData.name,
@@ -539,8 +684,8 @@ class ZaloManager extends EventEmitter {
         currentMems: allMembers,
         members: membersInfo,
         membersCount: allMembers.length,
-        hasMoreMember: 0, // Đã lấy hết
-        rawData: groupData, // Giữ lại data gốc
+        hasMoreMember: 0,
+        rawData: groupData,
       };
     } catch (error) {
       console.error(`\n[getInfoMembersGroupLink]  LỖI:`, error.message);
@@ -548,10 +693,6 @@ class ZaloManager extends EventEmitter {
       throw new Error(`Lỗi khi lấy thông tin group từ link: ${error.message}`);
     }
   }
-
-  // ==========================================
-  // HÀM 2: LẤY THÔNG TIN GROUP + MEMBERS TỪ GROUP ID
-  // ==========================================
 
   async getInfoMembersGroupId(accountId, groupId) {
     const account = this.accounts.get(accountId);
@@ -569,7 +710,6 @@ class ZaloManager extends EventEmitter {
     const api = account.api;
 
     try {
-      // Bước 1: Lấy thông tin group cơ bản
       console.log(`[getInfoMembersGroupId] 📥 Đang lấy thông tin group...`);
 
       const groupInfo = await api.getGroupInfo(groupId);
@@ -587,13 +727,11 @@ class ZaloManager extends EventEmitter {
         }`
       );
 
-      // Bước 2: Lấy danh sách members
       console.log(`\n[getInfoMembersGroupId] 👥 Đang lấy danh sách members...`);
 
       let allMembers = [];
       let membersList = null;
 
-      // Thử lấy members từ groupInfo trước
       if (groupInfo.members) {
         membersList = groupInfo.members;
       } else if (groupInfo.gridInfoMap) {
@@ -603,7 +741,6 @@ class ZaloManager extends EventEmitter {
         }
       }
 
-      // Nếu có members object, convert thành array
       if (membersList && typeof membersList === "object") {
         allMembers = Object.keys(membersList).map((uid) => ({
           id: uid,
@@ -616,7 +753,6 @@ class ZaloManager extends EventEmitter {
         `[getInfoMembersGroupId]  Đã lấy được: ${allMembers.length} thành viên`
       );
 
-      // Bước 3: Chuyển thành object để dễ tra cứu
       const membersInfo = {};
       allMembers.forEach((member) => {
         membersInfo[member.uid] = {
@@ -643,7 +779,6 @@ class ZaloManager extends EventEmitter {
       );
       console.log(`${"=".repeat(70)}\n`);
 
-      // Trả về kết quả
       return {
         groupId: groupId,
         groupName: groupInfo.name,
@@ -684,14 +819,12 @@ class ZaloManager extends EventEmitter {
       let targetUid = null;
       let targetName = "người dùng";
 
-      // --- BƯỚC 1: XÁC ĐỊNH UID CỦA NGƯỜI NHẬN ---
       const sanitizedIdentifier = targetIdentifier.replace(/\s+/g, "");
       const isPhoneNumber = /^(0|\+84|84)\d{9}$/.test(sanitizedIdentifier);
 
       if (isPhoneNumber) {
-        console.log(`[ZaloManager] 🔍 Nhận diện là SĐT, đang tìm UID...`);
+        console.log(`[ZaloManager] Nhận diện là SĐT, đang tìm UID...`);
         try {
-          // Dùng lại hàm findUserByPhone đã có, nó đã chuẩn hóa SĐT rồi
           const user = await this.findUserByPhone(
             accountId,
             sanitizedIdentifier
@@ -700,7 +833,7 @@ class ZaloManager extends EventEmitter {
             targetUid = user.userId;
             targetName = user.name;
             console.log(
-              `[ZaloManager] ✅ Tìm thấy: ${targetName} (UID: ${targetUid})`
+              `[ZaloManager] Tìm thấy: ${targetName} (UID: ${targetUid})`
             );
           } else {
             throw new Error(
@@ -708,29 +841,26 @@ class ZaloManager extends EventEmitter {
             );
           }
         } catch (findError) {
-          console.error(`[ZaloManager] ❌ Lỗi khi tìm SĐT:`, findError.message);
+          console.error(`[ZaloManager] Lỗi khi tìm SĐT:`, findError.message);
           throw findError;
         }
       } else {
-        // Nếu không phải SĐT, coi như là UID
         targetUid = sanitizedIdentifier;
-        targetName = `UID ${targetUid.substring(0, 8)}...`; // Tạm đặt tên
-        console.log(`[ZaloManager] ✅ Nhận diện là UID: ${targetUid}`);
+        targetName = `UID ${targetUid.substring(0, 8)}...`;
+        console.log(`[ZaloManager] Nhận diện là UID: ${targetUid}`);
       }
 
       if (!targetUid) {
         throw new Error("Không thể xác định được UID của người nhận.");
       }
 
-      // --- BƯỚC 2: GỌI ĐÚNG API `sendFriendRequest` ---
       console.log(
-        `\n[ZaloManager] 🚀 Đang gọi api.sendFriendRequest("${message}", "${targetUid}")...`
+        `\n[ZaloManager] Đang gọi api.sendFriendRequest("${message}", "${targetUid}")...`
       );
 
-      // Sử dụng API chính xác theo tài liệu bạn cung cấp
       const result = await api.sendFriendRequest(message, targetUid);
 
-      console.log(`\n[ZaloManager] ✅ GỬI LỜI MỜI KẾT BẠN THÀNH CÔNG!`);
+      console.log(`\n[ZaloManager] GỬI LỜI MỜI KẾT BẠN THÀNH CÔNG!`);
       console.log(
         `[ZaloManager] Đã gửi đến: ${targetName} (UID: ${targetUid})`
       );
@@ -746,13 +876,14 @@ class ZaloManager extends EventEmitter {
         result,
       };
     } catch (error) {
-      console.error(`\n[ZaloManager] ❌ LỖI KHI GỬI LỜI MỜI KẾT BẠN!`);
+      console.error(`\n[ZaloManager] LỖI KHI GỬI LỜI MỜI KẾT BẠN!`);
       console.error(`[ZaloManager] Target: ${targetIdentifier}`);
       console.error(`[ZaloManager] Error: ${error.message}`);
       console.error(`${"=".repeat(70)}\n`);
       throw new Error(`Gửi lời mời kết bạn thất bại: ${error.message}`);
     }
   }
+
   async testJoinGroupLink(accountId, groupLink) {
     const account = this.accounts.get(accountId);
     if (!account || !account.api) {
@@ -760,7 +891,7 @@ class ZaloManager extends EventEmitter {
     }
 
     console.log(`\n${"=".repeat(70)}`);
-    console.log(`[ZaloManager] 🧪 TEST joinGroupLink`);
+    console.log(`[ZaloManager] TEST joinGroupLink`);
     console.log(`[ZaloManager] Account: ${account.name} (${accountId})`);
     console.log(`[ZaloManager] Link: ${groupLink}`);
     console.log(`${"=".repeat(70)}\n`);
@@ -772,7 +903,6 @@ class ZaloManager extends EventEmitter {
 
       const result = await api.joinGroupLink(groupLink);
 
-      //  THÀNH CÔNG - Join ngay lập tức (nhóm không kiểm duyệt)
       console.log(`\n[ZaloManager]  JOIN NHÓM THÀNH CÔNG!`);
       console.log(`[ZaloManager] Bot đã tham gia nhóm ngay lập tức!`);
       console.log(`[ZaloManager] Response:`);
@@ -787,16 +917,16 @@ class ZaloManager extends EventEmitter {
         message: "Bot đã JOIN nhóm thành công!",
       };
     } catch (error) {
-      console.error(`[ZaloManager] ⚠️  API Response: ${error.message}`);
+      console.error(`[ZaloManager]  API Response: ${error.message}`);
 
       if (
         error.message.includes("Waiting for approve") ||
         error.message.includes("waiting for approve") ||
         error.message.includes("240")
       ) {
-        console.log(`\n[ZaloManager] ⏳ YÊU CẦU THAM GIA ĐÃ ĐƯỢC GỬI!`);
-        console.log(`[ZaloManager] 📋 Nhóm yêu cầu KIỂM DUYỆT thành viên.`);
-        console.log(`[ZaloManager] ⏰ Đang chờ admin phê duyệt...`);
+        console.log(`\n[ZaloManager] YÊU CẦU THAM GIA ĐÃ ĐƯỢỢC GỬI!`);
+        console.log(`[ZaloManager] Nhóm yêu cầu KIỂM DUYỆT thành viên.`);
+        console.log(`[ZaloManager] Đang chờ admin phê duyệt...`);
         console.log(
           `[ZaloManager] 💡 Bot sẽ tự động tham gia khi admin chấp nhận.`
         );
@@ -830,7 +960,6 @@ class ZaloManager extends EventEmitter {
         };
       }
 
-      //  LỖI THẬT SỰ
       console.error(`\n[ZaloManager]  LỖI THẬT SỰ!`);
       console.error(`[ZaloManager] Error: ${error.message}`);
       console.error(`[ZaloManager] Stack:`, error.stack);
@@ -847,7 +976,7 @@ class ZaloManager extends EventEmitter {
     }
 
     console.log(`\n${"=".repeat(70)}`);
-    console.log(`[ZaloManager] 🚪 BẮT ĐẦU THAM GIA NHÓM`);
+    console.log(`[ZaloManager] BẮT ĐẦU THAM GIA NHÓM`);
     console.log(`[ZaloManager] Account: ${account.name} (${accountId})`);
     console.log(`[ZaloManager] Link: ${groupLink}`);
     console.log(`${"=".repeat(70)}\n`);
@@ -862,7 +991,7 @@ class ZaloManager extends EventEmitter {
       console.log(`[ZaloManager] Response:`);
       console.log(JSON.stringify(result, null, 2));
       console.log(`${"=".repeat(70)}\n`);
-      camonquykhach;
+      // camonquykhach; // <-- LỖI CÚ PHÁP ĐÃ ĐƯỢC XÓA Ở ĐÂY
 
       return {
         success: true,
@@ -871,12 +1000,11 @@ class ZaloManager extends EventEmitter {
         data: result,
       };
     } catch (error) {
-      // Xử lý "Waiting for approve"
       if (
         error.message.includes("Waiting for approve") ||
         error.message.includes("240")
       ) {
-        console.log(`\n[ZaloManager] ⏳ YÊU CẦU THAM GIA ĐÃ GỬI!`);
+        console.log(`\n[ZaloManager] YÊU CẦU THAM GIA ĐÃ GỬI!`);
         console.log(`[ZaloManager] Đang chờ admin phê duyệt...`);
         console.log(`${"=".repeat(70)}\n`);
 
@@ -888,7 +1016,6 @@ class ZaloManager extends EventEmitter {
         };
       }
 
-      // Xử lý "Already member"
       if (error.message.includes("178")) {
         console.log(`\n[ZaloManager]  ĐÃ LÀ THÀNH VIÊN!`);
         console.log(`${"=".repeat(70)}\n`);
@@ -901,7 +1028,6 @@ class ZaloManager extends EventEmitter {
         };
       }
 
-      // Lỗi thật sự
       console.error(`\n[ZaloManager]  LỖI!`);
       console.error(`[ZaloManager] Error: ${error.message}`);
       console.error(`${"=".repeat(70)}\n`);
@@ -917,7 +1043,7 @@ class ZaloManager extends EventEmitter {
     }
 
     console.log(`\n${"=".repeat(70)}`);
-    console.log(`[ZaloManager] 📋 LẤY DANH SÁCH BẠN BÈ`);
+    console.log(`[ZaloManager] LẤY DANH SÁCH BẠN BÈ`);
     console.log(`[ZaloManager] Account: ${account.name} (${accountId})`);
     console.log(`${"=".repeat(70)}\n`);
 
@@ -930,31 +1056,22 @@ class ZaloManager extends EventEmitter {
 
       console.log(`\n[ZaloManager]  LẤY DANH SÁCH THÀNH CÔNG!`);
 
-      // Parse data
       let friends = [];
 
       if (friendList && typeof friendList === "object") {
-        // Case 1: friendList là object với key là userId
         if (!Array.isArray(friendList) && friendList.data) {
           friends = Object.values(friendList.data);
-        }
-        // Case 2: friendList.data là array
-        else if (friendList.data && Array.isArray(friendList.data)) {
+        } else if (friendList.data && Array.isArray(friendList.data)) {
           friends = friendList.data;
-        }
-        // Case 3: friendList là object trực tiếp
-        else if (!Array.isArray(friendList)) {
+        } else if (!Array.isArray(friendList)) {
           friends = Object.values(friendList);
-        }
-        // Case 4: friendList đã là array
-        else {
+        } else {
           friends = friendList;
         }
       }
 
-      console.log(`[ZaloManager] 📊 Tổng số bạn bè: ${friends.length}`);
+      console.log(`[ZaloManager] Tổng số bạn bè: ${friends.length}`);
 
-      // Format data
       const formattedFriends = friends.map((friend) => ({
         userId: friend.userId || friend.uid || friend.id,
         displayName: friend.displayName || friend.dName || friend.name,
@@ -991,14 +1108,13 @@ class ZaloManager extends EventEmitter {
     }
 
     console.log(`\n${"=".repeat(70)}`);
-    console.log(`[ZaloManager] 📋 LẤY DANH SÁCH NHÓM`);
+    console.log(`[ZaloManager] LẤY DANH SÁCH NHÓM`);
     console.log(`[ZaloManager] Account: ${account.name} (${accountId})`);
     console.log(`${"=".repeat(70)}\n`);
 
     const api = account.api;
 
     try {
-      // BƯỚC 1: Lấy danh sách ID của tất cả các nhóm
       console.log(
         `[ZaloManager]  Bước 1: Đang gọi api.getAllGroups() để lấy ID các nhóm...`
       );
@@ -1024,20 +1140,16 @@ class ZaloManager extends EventEmitter {
         };
       }
 
-      // BƯỚC 2: Lấy thông tin chi tiết cho từng nhóm bằng ID
       console.log(
         `\n[ZaloManager]  Bước 2: Đang lấy thông tin chi tiết cho ${groupIds.length} nhóm...`
       );
 
-      // Sử dụng Promise.all để tăng tốc độ, lấy thông tin nhiều nhóm cùng lúc
       const groupDetailsPromises = groupIds.map((id) => api.getGroupInfo(id));
       const groupDetailsList = await Promise.all(groupDetailsPromises);
 
       console.log(`[ZaloManager]  Đã lấy thành công thông tin chi tiết.`);
 
-      // BƯỚC 3: Format lại dữ liệu theo ý muốn
       const formattedGroups = groupDetailsList.map((group) => {
-        // groupInfo có thể nằm trong một key khác tùy vào phiên bản API
         const groupInfo = group.gridInfoMap
           ? Object.values(group.gridInfoMap)[0]
           : group;
@@ -1085,9 +1197,8 @@ class ZaloManager extends EventEmitter {
     const api = account.api;
 
     try {
-      // THAY ĐỔI Ở DÒNG NÀY: Thêm tham số thứ hai là `0`
       console.log(`[ZaloManager]  Đang gọi api.removeFriend(${userId}, 0)...`);
-      const result = await api.removeFriend(userId, 0); // <-- SỬA Ở ĐÂY
+      const result = await api.removeFriend(userId, 0);
 
       console.log(`\n[ZaloManager]  HỦY KẾT BẠN THÀNH CÔNG!`);
       console.log(`[ZaloManager] Response:`);
@@ -1115,7 +1226,7 @@ class ZaloManager extends EventEmitter {
     accountId,
     groupName,
     memberIdentifiers = [],
-    socket = null // Thêm socket để gửi cập nhật tiến trình
+    socket = null
   ) {
     const account = this.accounts.get(accountId);
     if (!account || !account.api) {
@@ -1131,10 +1242,9 @@ class ZaloManager extends EventEmitter {
     );
     console.log(`${"=".repeat(70)}\n`);
 
-    // --- BƯỚC 1: CHUẨN HÓA DANH SÁCH THÀNH VIÊN ---
     if (socket)
       socket.emit("scenario_update", {
-        message: `🔍 Đang chuẩn hóa ${memberIdentifiers.length} thành viên (SĐT -> UID)...`,
+        message: `Đang chuẩn hóa ${memberIdentifiers.length} thành viên (SĐT -> UID)...`,
       });
 
     const finalMemberIds = [];
@@ -1163,26 +1273,24 @@ class ZaloManager extends EventEmitter {
     );
 
     console.log(
-      `[ZaloManager] 📊 Đã xử lý xong: ${finalMemberIds.length} UID hợp lệ.`
+      `[ZaloManager] Đã xử lý xong: ${finalMemberIds.length} UID hợp lệ.`
     );
     if (failedIdentifiers.length > 0)
       console.warn(
-        `[ZaloManager] ⚠️ Thất bại: ${failedIdentifiers.length} thành viên.`
+        `[ZaloManager] Thất bại: ${failedIdentifiers.length} thành viên.`
       );
     if (finalMemberIds.length === 0)
       throw new Error("Không có thành viên hợp lệ nào để tạo nhóm.");
 
-    // --- BƯỚC 2: KIỂM TRA SỐ LƯỢNG VÀ CHỌN CHIẾN LƯỢC ---
-    const SAFE_CREATE_LIMIT = 50; // Giới hạn an toàn để tạo nhóm 1 lần
+    const SAFE_CREATE_LIMIT = 50;
 
-    // --- CHIẾN LƯỢC 1: SỐ LƯỢNG NHỎ, TẠO NHÓM TRỰC TIẾP ---
     if (finalMemberIds.length <= SAFE_CREATE_LIMIT) {
       console.log(
         `[ZaloManager] Số lượng (${finalMemberIds.length}) <= ${SAFE_CREATE_LIMIT}, tạo nhóm trực tiếp...`
       );
       if (socket)
         socket.emit("scenario_update", {
-          message: `🚀 Đang tạo nhóm với ${finalMemberIds.length} thành viên...`,
+          message: `Đang tạo nhóm với ${finalMemberIds.length} thành viên...`,
         });
 
       try {
@@ -1191,7 +1299,7 @@ class ZaloManager extends EventEmitter {
           members: finalMemberIds,
         });
         console.log(
-          `\n[ZaloManager] ✅ TẠO NHÓM THÀNH CÔNG! ID: ${result.groupId}`
+          `\n[ZaloManager] TẠO NHÓM THÀNH CÔNG! ID: ${result.groupId}`
         );
         return {
           success: true,
@@ -1200,17 +1308,14 @@ class ZaloManager extends EventEmitter {
           failedIdentifiers,
         };
       } catch (error) {
-        console.error(`\n[ZaloManager] ❌ LỖI KHI TẠO NHÓM TRỰC TIẾP!`, error);
+        console.error(`\n[ZaloManager] LỖI KHI TẠO NHÓM TRỰC TIẾP!`, error);
         throw new Error(`Tạo nhóm thất bại: ${error.message}`);
       }
-    }
-    // --- CHIẾN LƯỢC 2: SỐ LƯỢNG LỚN, TẠO VÀ THÊM THEO ĐỢT ---
-    else {
+    } else {
       console.log(
         `[ZaloManager] Số lượng (${finalMemberIds.length}) > ${SAFE_CREATE_LIMIT}, chuyển sang chế độ chia nhỏ.`
       );
 
-      // 2.1. Tạo nhóm chỉ với 2 thành viên đầu tiên để lấy Group ID
       const initialMembers = finalMemberIds.slice(0, 2);
       const remainingMembers = finalMemberIds.slice(2);
 
@@ -1219,7 +1324,7 @@ class ZaloManager extends EventEmitter {
       );
       if (socket)
         socket.emit("scenario_update", {
-          message: `🚀 Đang tạo nhóm "${groupName}" với 2 thành viên đầu...`,
+          message: `Đang tạo nhóm "${groupName}" với 2 thành viên đầu...`,
         });
 
       let groupId;
@@ -1230,13 +1335,12 @@ class ZaloManager extends EventEmitter {
         });
         groupId = createResponse.groupId;
         if (!groupId) throw new Error("Không nhận được Group ID sau khi tạo.");
-        console.log(`[ZaloManager]   ✅ Tạo nhóm thành công! ID: ${groupId}`);
+        console.log(`[ZaloManager] ] Tạo nhóm thành công! ID: ${groupId}`);
       } catch (error) {
-        console.error(`\n[ZaloManager] ❌ LỖI KHI TẠO NHÓM BAN ĐẦU!`, error);
+        console.error(`\n[ZaloManager] LỖI KHI TẠO NHÓM BAN ĐẦU!`, error);
         throw new Error(`Lỗi tạo nhóm ban đầu: ${error.message}`);
       }
 
-      // 2.2. Thêm các thành viên còn lại theo từng đợt
       console.log(
         `[ZaloManager] ↳ Bước 2.2: Chuẩn bị thêm ${remainingMembers.length} thành viên còn lại...`
       );
@@ -1252,21 +1356,19 @@ class ZaloManager extends EventEmitter {
         );
         if (socket)
           socket.emit("scenario_update", {
-            message: `➕ Đang thêm thành viên (Đợt ${currentBatchNum}/${totalBatches})...`,
+            message: `Đang thêm thành viên (Đợt ${currentBatchNum}/${totalBatches})...`,
           });
 
         try {
-          // SỬ DỤNG API CHÍNH XÁC BẠN CUNG CẤP: api.addUserToGroup(memberIds, groupId)
           await api.addUserToGroup(batch, groupId);
-          console.log(`[ZaloManager]     ✅ Thêm thành công.`);
+          console.log(`[ZaloManager]   ] Thêm thành công.`);
         } catch (error) {
           console.error(
-            `[ZaloManager]     ❌ Lỗi khi thêm đợt ${currentBatchNum}:`,
+            `[ZaloManager]     Lỗi khi thêm đợt ${currentBatchNum}:`,
             error.message
           );
         }
 
-        // Nghỉ một chút giữa các lần gọi để tránh bị block
         await new Promise((resolve) => setTimeout(resolve, 1500));
       }
 
@@ -1281,7 +1383,7 @@ class ZaloManager extends EventEmitter {
       return {
         success: true,
         message: "Tạo nhóm và thêm thành viên theo đợt thành công!",
-        data: { groupId }, // Trả về groupId để client biết
+        data: { groupId },
         failedIdentifiers,
       };
     }
@@ -1296,7 +1398,7 @@ class ZaloManager extends EventEmitter {
     }
 
     console.log(`\n${"=".repeat(70)}`);
-    console.log(`[ZaloManager] ✅ CHẤP NHẬN LỜI MỜI KẾT BẠN`);
+    console.log(`[ZaloManager] CHẤP NHẬN LỜI MỜI KẾT BẠN`);
     console.log(`[ZaloManager] Account: ${account.name} (${accountId})`);
     console.log(`[ZaloManager] Từ User ID: ${userId}`);
     console.log(`${"=".repeat(70)}\n`);
@@ -1310,7 +1412,7 @@ class ZaloManager extends EventEmitter {
       const result = await api.acceptFriendRequest(userId);
 
       console.log(`\n[ZaloManager]  CHẤP NHẬN THÀNH CÔNG!`);
-      console.log(`[ZaloManager] Response:`, result); // Thường là chuỗi rỗng
+      console.log(`[ZaloManager] Response:`, result);
       console.log(`${"=".repeat(70)}\n`);
 
       return {
@@ -1327,6 +1429,130 @@ class ZaloManager extends EventEmitter {
 
       throw new Error(`Chấp nhận lời mời kết bạn thất bại: ${error.message}`);
     }
+  }
+
+  async getAllFriendSuggestionsAndRequests(accountId) {
+    const account = this.accounts.get(accountId);
+    if (!account || !account.api) {
+      throw new Error(
+        `Không tìm thấy tài khoản đang hoạt động với ID: ${accountId}`
+      );
+    }
+
+    // --- BIẾN ĐỂ KIỂM SOÁT VÀ LƯU TRỮ ---
+    const allSuggestions = [];
+    const allIncomingRequests = [];
+    let start = 0;
+    const countPerPage = 50;
+    let hasMoreData = true;
+    let page = 1;
+
+    // --- CÁC CƠ CHẾ AN TOÀN MỚI ---
+    const MAX_PAGES = 20; // Giới hạn tối đa 20 lần gọi để tránh treo server
+    let lastUserIdFromPreviousPage = null; // Dùng để kiểm tra dữ liệu có bị lặp lại không
+
+    console.log(
+      `[ZaloManager] Bắt đầu quá trình lấy TẤT CẢ gợi ý/lời mời cho tài khoản ${accountId}...`
+    );
+
+    while (hasMoreData && page <= MAX_PAGES) {
+      console.log(
+        `[ZaloManager] -> Đang lấy trang ${page} (vị trí bắt đầu: ${start})...`
+      );
+
+      try {
+        const response = await account.api.getFriendRecommendations(
+          start,
+          countPerPage
+        );
+
+        // --- LOGIC DỪNG VÒNG LẶP NÂNG CAO ---
+        if (
+          !response ||
+          !response.recommItems ||
+          response.recommItems.length === 0
+        ) {
+          console.log(
+            `[ZaloManager] -> Trang ${page} không có dữ liệu. Kết thúc.`
+          );
+          hasMoreData = false;
+          continue;
+        }
+
+        const firstUserIdOfCurrentPage =
+          response.recommItems[0].dataInfo?.userId;
+        if (
+          firstUserIdOfCurrentPage &&
+          firstUserIdOfCurrentPage === lastUserIdFromPreviousPage
+        ) {
+          console.log(
+            `[ZaloManager] -> Dữ liệu trang ${page} bị lặp lại. Kết thúc.`
+          );
+          hasMoreData = false;
+          continue;
+        }
+
+        // Cập nhật ID người dùng cuối cùng của trang này để so sánh ở lần lặp sau
+        const lastItemIndex = response.recommItems.length - 1;
+        lastUserIdFromPreviousPage =
+          response.recommItems[lastItemIndex].dataInfo?.userId;
+
+        // --- PHÂN LOẠI DỮ LIỆU ---
+        for (const item of response.recommItems) {
+          const data = item.dataInfo;
+          if (!data) continue;
+
+          // Thêm kiểm tra để tránh thêm trùng lặp người dùng
+          const isAlreadyAdded =
+            allSuggestions.some((u) => u.userId === data.userId) ||
+            allIncomingRequests.some((u) => u.userId === data.userId);
+          if (isAlreadyAdded) {
+            continue; // Bỏ qua nếu người này đã có trong danh sách
+          }
+
+          const formattedUser = {
+            userId: data.userId,
+            displayName: data.displayName,
+            zaloName: data.zaloName,
+            avatar: data.avatar,
+            message: data.recommInfo?.message || "",
+          };
+
+          if (data.recommType === 1) {
+            allSuggestions.push(formattedUser);
+          } else if (data.recommType === 2) {
+            allIncomingRequests.push(formattedUser);
+          }
+        }
+
+        // Cập nhật cho lần lặp tiếp theo
+        start += countPerPage;
+        page++;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      } catch (loopError) {
+        console.error(
+          `[ZaloManager] Lỗi khi đang lấy trang ${page}. Dừng quá trình.`,
+          loopError
+        );
+        hasMoreData = false;
+      }
+    }
+
+    if (page > MAX_PAGES) {
+      console.warn(
+        `[ZaloManager] Đã đạt giới hạn ${MAX_PAGES} trang. Tự động dừng để đảm bảo an toàn.`
+      );
+    }
+
+    console.log(
+      `[ZaloManager] Hoàn tất! Tổng cộng đã lấy được: ${allSuggestions.length} gợi ý và ${allIncomingRequests.length} lời mời.`
+    );
+
+    return {
+      success: true,
+      suggestions: allSuggestions,
+      incomingRequests: allIncomingRequests,
+    };
   }
 }
 const zaloManager = new ZaloManager();

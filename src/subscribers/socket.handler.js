@@ -513,7 +513,7 @@ export function initializeSocketHandler(io) {
 
     // API duy nhất client gọi qua socket: Yêu cầu đăng nhập mới
     socket.on("request_new_login", () => {
-      zaloManager.initiateLogin(socket.id);
+      zaloManager.initiateLogin(socket.id, io);
     });
 
     socket.on("disconnect", () => {

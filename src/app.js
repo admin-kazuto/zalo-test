@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import cors from 'cors'; 
 import { initializeSocketHandler } from "./subscribers/socket.handler.js"; 
 import zaloManager from './services/zalo.manager.js';
+import router from "./apis/api.router.js";
 
 dotenv.config();
 
@@ -15,7 +16,8 @@ const server = http.createServer(app);
 const allowedOrigins = [
     "http://localhost:5173", // Địa chỉ của React FE
     "http://127.0.0.1:5500",
-    "null"
+    "null", 
+    "*"
 ];
 
 // BƯỚC 1: Cấu hình CORS cho các HTTP Request (quan trọng cho handshake ban đầu của Socket.IO)
@@ -36,7 +38,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Tích hợp RESTful API (nếu có)
-// app.use("/api", apiRouter);
+app.use("/api", router);
 
 app.get('/api/qr-code/:tempId.png', (req, res) => {
     const { tempId } = req.params;
