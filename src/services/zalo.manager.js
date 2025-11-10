@@ -59,14 +59,14 @@ class ZaloManager extends EventEmitter {
       imageMetadataGetter: metadataGetter,
     });
 
-    // 🧠 Lưu lại phiên login
+    //  Lưu lại phiên login
     this.loginSessions.set(tempId, { socketId });
     console.log(
       `[ZaloManager] Bắt đầu phiên đăng nhập ${tempId} cho client ${socketId}`
     );
 
     try {
-      // 🧩 Gọi loginQR để lấy mã QR
+      //  Gọi loginQR để lấy mã QR
       const api = await zalo.loginQR(null, (qrData) => {
         console.log("[ZaloManager] Callback QR được gọi!");
 
@@ -1439,7 +1439,6 @@ class ZaloManager extends EventEmitter {
       );
     }
 
-    // --- BIẾN ĐỂ KIỂM SOÁT VÀ LƯU TRỮ ---
     const allSuggestions = [];
     const allIncomingRequests = [];
     let start = 0;
@@ -1447,9 +1446,8 @@ class ZaloManager extends EventEmitter {
     let hasMoreData = true;
     let page = 1;
 
-    // --- CÁC CƠ CHẾ AN TOÀN MỚI ---
-    const MAX_PAGES = 20; // Giới hạn tối đa 20 lần gọi để tránh treo server
-    let lastUserIdFromPreviousPage = null; // Dùng để kiểm tra dữ liệu có bị lặp lại không
+    const MAX_PAGES = 20;
+    let lastUserIdFromPreviousPage = null;
 
     console.log(
       `[ZaloManager] Bắt đầu quá trình lấy TẤT CẢ gợi ý/lời mời cho tài khoản ${accountId}...`
@@ -1466,7 +1464,6 @@ class ZaloManager extends EventEmitter {
           countPerPage
         );
 
-        // --- LOGIC DỪNG VÒNG LẶP NÂNG CAO ---
         if (
           !response ||
           !response.recommItems ||
@@ -1554,6 +1551,93 @@ class ZaloManager extends EventEmitter {
       incomingRequests: allIncomingRequests,
     };
   }
+
+  async getUserProfile(accountId, targetIdentifier) {
+    const account = this.accounts.get(accountId);
+    if (!account || !account.api) {
+      throw new Error(
+        `Không tìm thấy tài khoản hoặc tài khoản chưa sẵn sàng: ${accountId}`
+      );
+    }
+    const api = account.api;
+
+    console.log(`\n${"=".repeat(70)}`);
+    console.log(`[ZaloManager] LẤY THÔNG TIN NGƯỜI DÙNG`);
+    console.log(`[ZaloManager] Account: ${account.name} (${accountId})`);
+    console.log(`[ZaloManager] Target Identifier: ${targetIdentifier}`);
+    console.log(`${"=".repeat(70)}\n`);
+
+    try {
+      let userProfile = null;
+      const sanitizedIdentifier = targetIdentifier.replace(/\s+/g, "");
+      // Sử dụng regex để kiểm tra xem có phải là SĐT hay không
+      const isPhoneNumber = /^(0|\+84|84)\d{9}$/.test(sanitizedIdentifier);
+
+      if (isPhoneNumber) {
+        console.log(
+          `[ZaloManager]  Nhận diện là SĐT. Đang dùng api.findUser...`
+        );
+        // Nếu là SĐT, dùng api.findUser
+        const response = await api.findUser(sanitizedIdentifier);
+        if (response && response.uid) {
+          userProfile = response;
+        }
+      } else {
+        console.log(
+          `[ZaloManager]  Nhận diện là UID. Đang dùng api.getUserInfo...`
+        );
+        // Nếu không phải SĐT, mặc định là UID và dùng api.getUserInfo
+        const response = await api.getUserInfo(sanitizedIdentifier);
+        if (
+          response &&
+          response.changed_profiles &&
+          response.changed_profiles[sanitizedIdentifier]
+        ) {
+          userProfile = response.changed_profiles[sanitizedIdentifier];
+        }
+      }
+
+      // Sau khi có dữ liệu thô từ 1 trong 2 API, kiểm tra và format lại
+      if (!userProfile) {
+        throw new Error(
+          `Không tìm thấy thông tin cho người dùng với định danh: ${targetIdentifier}`
+        );
+      }
+
+      // Chuẩn hóa dữ liệu trả về để có chung một cấu trúc
+      const formattedProfile = {
+        userId: userProfile.uid,
+        zaloName: userProfile.zaloName || userProfile.zalo_name,
+        displayName:
+          userProfile.dName ||
+          userProfile.displayName ||
+          userProfile.display_name,
+        avatar: userProfile.avatar,
+        cover: userProfile.cover,
+        gender: userProfile.gender,
+        dob: userProfile.dob,
+        // Lưu ý: Cả 2 API đều không trả về số điện thoại vì lý do bảo mật
+      };
+
+      console.log(
+        `[ZaloManager]  Lấy thông tin thành công cho: ${formattedProfile.zaloName}`
+      );
+      console.log(`${"=".repeat(70)}\n`);
+
+      return {
+        success: true,
+        profile: formattedProfile,
+        message: "Lấy thông tin người dùng thành công.",
+      };
+    } catch (error) {
+      console.error(`\n[ZaloManager]  LỖI KHI LẤY THÔNG TIN NGƯỜI DÙNG!`);
+      console.error(`[ZaloManager] Target Identifier: ${targetIdentifier}`);
+      console.error(`[ZaloManager] Error: ${error.message}`);
+      console.error(`${"=".repeat(70)}\n`);
+      throw new Error(`Lấy thông tin người dùng thất bại: ${error.message}`);
+    }
+  }
 }
+
 const zaloManager = new ZaloManager();
 export default zaloManager;

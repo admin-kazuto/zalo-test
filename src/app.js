@@ -62,14 +62,10 @@ app.get('/api/qr-code/:tempId.png', (req, res) => {
     }
 });
 
-app.get('/api/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
-
-// Khởi tạo trình xử lý Socket.IO
 initializeSocketHandler(io);
 
 
-// Khởi động Server
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
     console.log(`[SERVER] Máy chủ đang lắng nghe trên cổng ${PORT}`);

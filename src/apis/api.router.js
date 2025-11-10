@@ -81,8 +81,7 @@ router.post("/message/send", upload.array("files", 10), async (req, res) => {
     // 2. Gửi một phản hồi lỗi chuẩn về cho client (Postman)
     res.status(500).json({
       message: `Đã xảy ra lỗi phía máy chủ: ${error.message}`,
-      // Bạn có thể tùy chọn gửi thêm stack trace để debug phía client nếu cần
-      // stack: error.stack
+
     });
   }
 });
@@ -204,25 +203,50 @@ router.get("/groups/info-by-link", async (req, res) => {
   }
 });
 
-
 router.get("/accounts/:accountId/friend-requests/all", async (req, res) => {
   try {
     const { accountId } = req.params;
 
     if (!accountId) {
-      return res.status(400).json({ message: "Thiếu thông tin accountId trong URL" });
+      return res
+        .status(400)
+        .json({ message: "Thiếu thông tin accountId trong URL" });
     }
 
     // Chỉ cần gọi một hàm duy nhất để lấy tất cả và phân loại
-    const result = await zaloManager.getAllFriendSuggestionsAndRequests(accountId);
+    const result = await zaloManager.getAllFriendSuggestionsAndRequests(
+      accountId
+    );
 
     res.status(200).json(result);
-    
   } catch (error) {
     console.error("!!! LỖI TẠI ROUTE .../friend-requests/all:", error);
     res.status(500).json({
       message: `Đã xảy ra lỗi khi lấy toàn bộ danh sách: ${error.message}`,
     });
+  }
+});
+
+router.get("/accounts/:accountId/users/:targetIdentifier", async (req, res) => {
+  const { accountId, targetIdentifier } = req.params;
+
+  if (!accountId || !targetIdentifier) {
+    return res.status(400).json({
+      message: "Thiếu thông tin bắt buộc: accountId hoặc targetIdentifier",
+    });
+  }
+
+  try {
+    const result = await zaloManager.getUserProfile(
+      accountId,
+      targetIdentifier
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("!!! LỖI TẠI ROUTE /users/:targetIdentifier:", error);
+    res
+      .status(500)
+      .json({ message: `Lỗi khi lấy thông tin người dùng: ${error.message}` });
   }
 });
 export default router;
