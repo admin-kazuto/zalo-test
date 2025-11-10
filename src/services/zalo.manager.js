@@ -1637,6 +1637,60 @@ class ZaloManager extends EventEmitter {
       throw new Error(`Lấy thông tin người dùng thất bại: ${error.message}`);
     }
   }
+
+  async bulkSendMessageToUids(accountId, uids, messageText) {
+    const account = this.accounts.get(accountId);
+    if (!account || !account.api) {
+      throw new Error(`Tài khoản không sẵn sàng: ${accountId}`);
+    }
+    const api = account.api;
+
+    console.log(`\n${"=".repeat(70)}`);
+    console.log(`[Bulk Send] BẮT ĐẦU CHIẾN DỊCH GỬI TIN NHẮN`);
+    console.log(`[Bulk Send] Account: ${account.name} (${accountId})`);
+    console.log(`[Bulk Send] Tổng số người nhận: ${uids.length}`);
+    console.log(`${"=".repeat(70)}\n`);
+
+    // Hàm này sẽ tự chạy trong nền, không cần "await" ở nơi gọi
+    // Điều này giúp API có thể trả về phản hồi ngay lập tức
+    const run = async () => {
+      for (let i = 0; i < uids.length; i++) {
+        const targetUid = uids[i];
+        console.log(
+          `[Bulk Send] Đang gửi tới UID ${i + 1}/${uids.length}: ${targetUid}`
+        );
+
+        try {
+          // Sử dụng lại hàm gửi tin nhắn đã có
+          await this.sendMessageWithAttachments(
+            accountId,
+            targetUid,
+            "User", // Luôn là tin nhắn cá nhân
+            messageText,
+            [] // Không có file đính kèm trong trường hợp này
+          );
+          console.log(`  -> Thành công!`);
+        } catch (error) {
+          console.error(`  -> Thất bại: ${error.message}`);
+        }
+
+        // !! QUAN TRỌNG: Thêm độ trễ giữa các lần gửi để tránh bị Zalo khóa !!
+        // Gửi 1 tin nhắn mỗi 1.5 giây
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      console.log(
+        `\n[Bulk Send] HOÀN TẤT CHIẾN DỊCH! Đã gửi tới ${uids.length} người.\n`
+      );
+    };
+
+    run(); // Gọi hàm chạy nền
+
+    // Trả về một Promise giải quyết ngay lập tức
+    return Promise.resolve({
+      message: `Đã bắt đầu chiến dịch gửi tin nhắn tới ${uids.length} người dùng.`,
+      totalRecipients: uids.length,
+    });
+  }
 }
 
 const zaloManager = new ZaloManager();
