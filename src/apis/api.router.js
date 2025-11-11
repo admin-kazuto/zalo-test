@@ -249,6 +249,36 @@ router.get("/accounts/:accountId/users/:targetIdentifier", async (req, res) => {
   }
 });
 
+router.get("/accounts/:accountId/groups/:groupId", async (req, res) => {
+  // BƯỚC 1: Lấy cả accountId và groupId trực tiếp từ req.params
+  const { accountId, groupId } = req.params;
+
+  // BƯỚC 2: Kiểm tra dữ liệu đầu vào (đã được Express đảm bảo là có)
+  // Không cần kiểm tra vì nếu thiếu, route sẽ không khớp
+
+  try {
+    // BƯỚC 3: Gọi hàm service để lấy thông tin nhóm bằng ID
+    const groupInfo = await zaloManager.getInfoMembersGroupId(accountId, groupId);
+
+    // BƯỚC 4: Kiểm tra kết quả trả về
+    if (!groupInfo) {
+      return res.status(404).json({
+        message: `Không tìm thấy thông tin cho nhóm có ID: ${groupId} hoặc tài khoản ${accountId} không có quyền truy cập.`,
+      });
+    }
+
+    // BƯỚC 5: Trả về dữ liệu JSON thành công cho frontend
+    res.status(200).json(groupInfo);
+
+  } catch (error) {
+    // BƯỚC 6: Bắt lỗi và gửi phản hồi
+    console.error(`[API /accounts/:accountId/groups/:groupId] Lỗi:`, error);
+    res.status(500).json({
+      message: `Đã xảy ra lỗi phía máy chủ khi lấy thông tin nhóm: ${error.message}`,
+    });
+  }
+});
+
 router.get("/groups/export-members", async (req, res) => {
   // BƯỚC 1: Lấy accountId trực tiếp từ Query Params của URL
   const { accountId, groupLink, groupId } = req.query;
