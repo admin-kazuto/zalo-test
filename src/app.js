@@ -14,11 +14,10 @@ const server = http.createServer(app);
 
 // --- CẤU HÌNH CORS ---
 const allowedOrigins = [
-    // "http://localhost:5173", // Địa chỉ của React FE
+    "http://localhost:3000", // Địa chỉ của React FE
     // "http://127.0.0.1:5500",
     // "null", 
     "*",
-
     "https://tool-zalo.vercel.app"
 ];
 
