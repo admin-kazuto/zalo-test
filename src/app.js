@@ -37,6 +37,12 @@ const io = new SocketIOServer(server, {
 // Middleware để xử lý JSON body
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "Server is running properly 🚀"
+  });
+});
 
 // Tích hợp RESTful API (nếu có)
 app.use("/api", router);

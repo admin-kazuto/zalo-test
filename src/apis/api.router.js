@@ -4,9 +4,9 @@ import multer from "multer";
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
-router.get("/health", (req, res) => {
-  res.status(200).json({ status: "OK", message: "Server is running" });
-});
+// router.get("/health", (req, res) => {
+//   res.status(200).json({ status: "OK", message: "Server is running" });
+// });
 
 router.get("/account", (req, res) => {
   try {
