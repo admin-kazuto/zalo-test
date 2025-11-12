@@ -197,7 +197,7 @@ class ZaloManager extends EventEmitter {
   //   recipientId,
   //   recipientType,
   //   messageText = "",
-  //   filePaths = []
+  //   files = [] // <-- Nhận vào một mảng object file, không phải mảng đường dẫn
   // ) {
   //   const account = this.accounts.get(accountId);
   //   if (!account || !account.api) {
@@ -207,7 +207,7 @@ class ZaloManager extends EventEmitter {
   //   }
   //   const api = account.api;
   //   console.log(
-  //     `[ZaloManager] Tài khoản '${account.name}' đang gửi tin nhắn/file đến ${recipientId}...`
+  //     `[ZaloManager] Tài khoản '${account.name}' đang chuẩn bị gửi tin/file đến ${recipientId}...`
   //   );
 
   //   try {
@@ -216,20 +216,24 @@ class ZaloManager extends EventEmitter {
   //         ? ThreadType.Group
   //         : ThreadType.User;
 
+  //     // Chuẩn bị payload cơ bản
   //     const messagePayload = { msg: messageText || "" };
 
-  //     if (filePaths && filePaths.length > 0) {
+  //     // Xử lý các file đính kèm nếu có
+  //     if (files && files.length > 0) {
+  //       console.log(
+  //         `[ZaloManager] Đang xử lý ${files.length} file đính kèm...`
+  //       );
+
+  //       // Sử dụng Promise.all để xử lý bất đồng bộ
   //       const attachments = await Promise.all(
-  //         filePaths.map(async (filePath) => {
-  //           if (!fs.existsSync(filePath)) {
-  //             console.error(
-  //               `[ZaloManager] Lỗi: File không tồn tại tại đường dẫn: ${filePath}`
-  //             );
-  //             return null;
-  //           }
-  //           const buffer = fs.readFileSync(filePath);
+  //         // <-- Lặp qua mảng `files` từ multer
+  //         files.map(async (file) => {
+  //           // Lấy dữ liệu nhị phân trực tiếp từ buffer của file
+  //           const buffer = file.buffer;
   //           const fileType = await fileTypeFromBuffer(buffer);
 
+  //           // Xây dựng metadata theo yêu cầu của zca-js
   //           const metadata = {
   //             totalSize: buffer.length,
   //           };
@@ -240,59 +244,62 @@ class ZaloManager extends EventEmitter {
   //               metadata.width = imageMeta.width;
   //               metadata.height = imageMeta.height;
   //               console.log(
-  //                 `[ZaloManager] Đã xử lý file ảnh: ${path.basename(filePath)}`
+  //                 `[ZaloManager] Đã xử lý file ảnh: ${file.originalname}`
   //               );
   //             } catch (e) {
   //               console.warn(
-  //                 `[ZaloManager] Không thể đọc kích thước ảnh cho file: ${path.basename(
-  //                   filePath
-  //                 )}`
+  //                 `[ZaloManager] Không thể đọc kích thước ảnh cho file: ${file.originalname}`
   //               );
   //             }
   //           } else if (fileType?.mime.startsWith("video/")) {
-  //             metadata.width = 1280;
-  //             metadata.height = 720;
+  //             metadata.width = 1280; // Giá trị giả lập
+  //             metadata.height = 720; // Giá trị giả lập
   //             console.log(
-  //               `[ZaloManager] Đã xử lý file video: ${path.basename(filePath)}`
+  //               `[ZaloManager] Đã xử lý file video: ${file.originalname}`
   //             );
   //           } else {
+  //             metadata.width = 0;
+  //             metadata.height = 0;
   //             console.log(
-  //               `[ZaloManager] Đã xử lý file thông thường: ${path.basename(
-  //                 filePath
-  //               )}`
+  //               `[ZaloManager] Đã xử lý file thông thường: ${file.originalname}`
   //             );
   //           }
 
+  //           // Trả về object đúng với cấu trúc `AttachmentSource` của zca-js
   //           return {
   //             data: buffer,
-  //             filename: path.basename(filePath),
+  //             filename: file.originalname,
   //             metadata: metadata,
   //           };
   //         })
   //       );
 
+  //       // Thêm các file đính kèm hợp lệ vào payload
   //       const validAttachments = attachments.filter((att) => att !== null);
   //       if (validAttachments.length > 0) {
   //         messagePayload.attachments = validAttachments;
   //       }
   //     }
 
+  //     // Kiểm tra lại lần cuối xem có gì để gửi không
   //     if (
   //       !messagePayload.msg &&
   //       (!messagePayload.attachments || messagePayload.attachments.length === 0)
   //     ) {
   //       console.warn(
-  //         "[ZaloManager] Không có nội dung văn bản hoặc file hợp lệ để gửi."
+  //         "[ZaloManager] Không có nội dung để gửi (không có văn bản hoặc file hợp lệ)."
   //       );
   //       return { message: "Không có nội dung để gửi." };
   //     }
 
+  //     // Gửi tin nhắn bằng zca-js
   //     const result = await api.sendMessage(
   //       messagePayload,
   //       recipientId,
   //       threadType
   //     );
 
+  //     // Xử lý kết quả trả về
   //     if (
   //       result &&
   //       (result.message || (result.attachment && result.attachment.length > 0))
@@ -310,7 +317,7 @@ class ZaloManager extends EventEmitter {
   //     }
   //   } catch (error) {
   //     console.error(
-  //       `[ZaloManager] Lỗi khi thực thi lệnh gửi tin nhắn/file từ tài khoản ${accountId}:`,
+  //       `[ZaloManager] Lỗi khi gửi tin nhắn từ tài khoản ${accountId}:`,
   //       error
   //     );
   //     throw error;
@@ -373,8 +380,11 @@ class ZaloManager extends EventEmitter {
                 );
               } catch (e) {
                 console.warn(
-                  `[ZaloManager] Không thể đọc kích thước ảnh cho file: ${file.originalname}`
+                  `[ZaloManager] Không thể đọc kích thước ảnh cho file: ${file.originalname}, sẽ dùng giá trị mặc định.`
                 );
+                // Cung cấp giá trị mặc định nếu đọc metadata ảnh thất bại
+                metadata.width = 0;
+                metadata.height = 0;
               }
             } else if (fileType?.mime.startsWith("video/")) {
               metadata.width = 1280; // Giá trị giả lập
@@ -383,6 +393,12 @@ class ZaloManager extends EventEmitter {
                 `[ZaloManager] Đã xử lý file video: ${file.originalname}`
               );
             } else {
+              // ======================= PHẦN SỬA LỖI =======================
+              // Luôn cung cấp width và height cho các loại file khác (doc, txt, pdf, zip...)
+              // Đây là nguyên nhân gây treo server của bạn
+              metadata.width = 0;
+              metadata.height = 0;
+              // =============================================================
               console.log(
                 `[ZaloManager] Đã xử lý file thông thường: ${file.originalname}`
               );
