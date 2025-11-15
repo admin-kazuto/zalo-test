@@ -6,6 +6,7 @@ import imageSize from "image-size";
 import fs from "fs";
 import path from "path";
 import _default from "concurrently";
+import cacheService from "../utils/cache.service.js";
 
 const metadataGetter = (filePath) => {
   try {
@@ -539,6 +540,15 @@ class ZaloManager extends EventEmitter {
     const api = account.api;
 
     try {
+      // Sử dụng cache cho group link info (cache ngắn hơn vì có thể thay đổi)
+      const cacheKey = cacheService.keyGroupLinkInfo(accountId, groupLink);
+      const cachedResult = cacheService.get(cacheKey);
+      
+      if (cachedResult) {
+        console.log(`[getInfoMembersGroupLink]  Lấy từ cache!`);
+        return cachedResult;
+      }
+
       console.log(`[getInfoMembersGroupLink] 📥 Đang lấy trang đầu tiên...`);
 
       const firstResult = await api.getGroupLinkInfo({
@@ -691,7 +701,7 @@ class ZaloManager extends EventEmitter {
       );
       console.log(`${"=".repeat(70)}\n`);
 
-      return {
+      const result = {
         groupId: groupId,
         groupName: groupData.name,
         totalMember: groupData.totalMember,
@@ -703,6 +713,11 @@ class ZaloManager extends EventEmitter {
         hasMoreMember: 0,
         rawData: groupData,
       };
+      
+      // Cache kết quả (cache ngắn hơn vì member list có thể thay đổi)
+      cacheService.set(cacheKey, result, 2 * 60 * 1000); // 2 phút
+      
+      return result;
     } catch (error) {
       console.error(`\n[getInfoMembersGroupLink]  LỖI:`, error.message);
       console.error(`[getInfoMembersGroupLink] Stack:`, error.stack);
@@ -726,9 +741,16 @@ class ZaloManager extends EventEmitter {
     const api = account.api;
 
     try {
-      console.log(`[getInfoMembersGroupId] 📥 Đang lấy thông tin group...`);
-
-      const groupInfo = await api.getGroupInfo(groupId);
+      // Sử dụng cache để giảm delay
+      const cacheKey = cacheService.keyGroupInfo(accountId, groupId);
+      const groupInfo = await cacheService.getOrSet(
+        cacheKey,
+        async () => {
+          console.log(`[getInfoMembersGroupId] 📥 Đang lấy thông tin group...`);
+          return await api.getGroupInfo(groupId);
+        },
+        5 * 60 * 1000 // Cache 5 phút
+      );
 
       if (!groupInfo) {
         throw new Error(`Không lấy được thông tin group với ID: ${groupId}`);
@@ -1066,9 +1088,16 @@ class ZaloManager extends EventEmitter {
     const api = account.api;
 
     try {
-      console.log(`[ZaloManager]  Đang gọi api.getFriendList()...`);
-
-      const friendList = await api.getAllFriends();
+      // Sử dụng cache để giảm delay
+      const cacheKey = cacheService.keyFriendList(accountId);
+      const friendList = await cacheService.getOrSet(
+        cacheKey,
+        async () => {
+          console.log(`[ZaloManager]  Đang gọi api.getFriendList()...`);
+          return await api.getAllFriends();
+        },
+        5 * 60 * 1000 // Cache 5 phút
+      );
 
       console.log(`\n[ZaloManager]  LẤY DANH SÁCH THÀNH CÔNG!`);
 
@@ -1131,6 +1160,15 @@ class ZaloManager extends EventEmitter {
     const api = account.api;
 
     try {
+      // Sử dụng cache để giảm delay
+      const cacheKey = cacheService.keyGroupList(accountId);
+      const cachedResult = cacheService.get(cacheKey);
+      
+      if (cachedResult) {
+        console.log(`[ZaloManager]  Lấy từ cache, trả về ngay lập tức!`);
+        return cachedResult;
+      }
+
       console.log(
         `[ZaloManager]  Bước 1: Đang gọi api.getAllGroups() để lấy ID các nhóm...`
       );
@@ -1148,19 +1186,29 @@ class ZaloManager extends EventEmitter {
       if (groupIds.length === 0) {
         console.log(`[ZaloManager]  Tài khoản này không tham gia nhóm nào.`);
         console.log(`${"=".repeat(70)}\n`);
-        return {
+        const emptyResult = {
           success: true,
           totalGroups: 0,
           groups: [],
           message: "Tài khoản không tham gia nhóm nào.",
         };
+        cacheService.set(cacheKey, emptyResult, 5 * 60 * 1000);
+        return emptyResult;
       }
 
       console.log(
-        `\n[ZaloManager]  Bước 2: Đang lấy thông tin chi tiết cho ${groupIds.length} nhóm...`
+        `\n[ZaloManager]  Bước 2: Đang lấy thông tin chi tiết cho ${groupIds.length} nhóm (PARALLEL)...`
       );
 
-      const groupDetailsPromises = groupIds.map((id) => api.getGroupInfo(id));
+      // Tối ưu: Gọi parallel với cache cho từng group
+      const groupDetailsPromises = groupIds.map(async (id) => {
+        const groupCacheKey = cacheService.keyGroupInfo(accountId, id);
+        return cacheService.getOrSet(
+          groupCacheKey,
+          async () => await api.getGroupInfo(id),
+          5 * 60 * 1000 // Cache 5 phút
+        );
+      });
       const groupDetailsList = await Promise.all(groupDetailsPromises);
 
       console.log(`[ZaloManager]  Đã lấy thành công thông tin chi tiết.`);
@@ -1183,12 +1231,16 @@ class ZaloManager extends EventEmitter {
       );
       console.log(`${"=".repeat(70)}\n`);
 
-      return {
+      const result = {
         success: true,
         totalGroups: formattedGroups.length,
         groups: formattedGroups,
         message: `Đã lấy thành công ${formattedGroups.length} nhóm`,
       };
+      
+      // Cache kết quả
+      cacheService.set(cacheKey, result, 5 * 60 * 1000);
+      return result;
     } catch (error) {
       console.error(`\n[ZaloManager]  LỖI KHI LẤY DANH SÁCH NHÓM!`);
       console.error(`[ZaloManager] Error: ${error.message}`);
@@ -1584,41 +1636,53 @@ class ZaloManager extends EventEmitter {
     console.log(`${"=".repeat(70)}\n`);
 
     try {
-      let userProfile = null;
       const sanitizedIdentifier = targetIdentifier.replace(/\s+/g, "");
-      // Sử dụng regex để kiểm tra xem có phải là SĐT hay không
-      const isPhoneNumber = /^(0|\+84|84)\d{9}$/.test(sanitizedIdentifier);
+      
+      // Sử dụng cache để giảm delay
+      const cacheKey = cacheService.keyUserProfile(accountId, sanitizedIdentifier);
+      const cachedProfile = await cacheService.getOrSet(
+        cacheKey,
+        async () => {
+          let userProfile = null;
+          // Sử dụng regex để kiểm tra xem có phải là SĐT hay không
+          const isPhoneNumber = /^(0|\+84|84)\d{9}$/.test(sanitizedIdentifier);
 
-      if (isPhoneNumber) {
-        console.log(
-          `[ZaloManager]  Nhận diện là SĐT. Đang dùng api.findUser...`
-        );
-        // Nếu là SĐT, dùng api.findUser
-        const response = await api.findUser(sanitizedIdentifier);
-        if (response && response.uid) {
-          userProfile = response;
-        }
-      } else {
-        console.log(
-          `[ZaloManager]  Nhận diện là UID. Đang dùng api.getUserInfo...`
-        );
-        // Nếu không phải SĐT, mặc định là UID và dùng api.getUserInfo
-        const response = await api.getUserInfo(sanitizedIdentifier);
-        if (
-          response &&
-          response.changed_profiles &&
-          response.changed_profiles[sanitizedIdentifier]
-        ) {
-          userProfile = response.changed_profiles[sanitizedIdentifier];
-        }
-      }
-
-      // Sau khi có dữ liệu thô từ 1 trong 2 API, kiểm tra và format lại
-      if (!userProfile) {
-        throw new Error(
-          `Không tìm thấy thông tin cho người dùng với định danh: ${targetIdentifier}`
-        );
-      }
+          if (isPhoneNumber) {
+            console.log(
+              `[ZaloManager]  Nhận diện là SĐT. Đang dùng api.findUser...`
+            );
+            // Nếu là SĐT, dùng api.findUser
+            const response = await api.findUser(sanitizedIdentifier);
+            if (response && response.uid) {
+              userProfile = response;
+            }
+          } else {
+            console.log(
+              `[ZaloManager]  Nhận diện là UID. Đang dùng api.getUserInfo...`
+            );
+            // Nếu không phải SĐT, mặc định là UID và dùng api.getUserInfo
+            const response = await api.getUserInfo(sanitizedIdentifier);
+            if (
+              response &&
+              response.changed_profiles &&
+              response.changed_profiles[sanitizedIdentifier]
+            ) {
+              userProfile = response.changed_profiles[sanitizedIdentifier];
+            }
+          }
+          
+          if (!userProfile) {
+            throw new Error(
+              `Không tìm thấy thông tin cho người dùng với định danh: ${targetIdentifier}`
+            );
+          }
+          
+          return userProfile;
+        },
+        10 * 60 * 1000 // Cache 10 phút cho user profile
+      );
+      
+      const userProfile = cachedProfile;
 
       // Chuẩn hóa dữ liệu trả về để có chung một cấu trúc
       const formattedProfile = {
